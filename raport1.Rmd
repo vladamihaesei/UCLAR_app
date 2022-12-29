@@ -1,0 +1,198 @@
+---
+title: "UCLAR- raport"
+author: "Vlad Amihaesei"
+output: html_document
+runtime: shiny
+resource_files:
+- legend_decreasing.R
+- global.R
+- data/tabs1/MODIS/tabsall_cloud_pixels.qs
+- data/grids1/MODIS/MOD11A1/all_rasters.qs
+- data/grids1/MODIS/MYD11A1/all_rasters.qs
+- data/grids1/MODIS/MYD11A1/Day/rasters.qs
+- data/grids1/MODIS/MYD11A1/Night/rasters.qs
+- data/grids1/MODIS/MOD11A1/Night/rasters.qs
+- data/grids1/MODIS/MOD11A1/Day/rasters.qs
+---
+## Temperatura la suprafața terestră (°C)
+
+Temperatura la suprafața terestră (TST) poate fi măsurată prin observații in situ, modele numerice sau observații prin satelit. Imaginile satelitare reprezintă un set de date util pentru monitorizarea insulei de căldură urbana. În acest studiu, datele satelitare de la MODIS (Aqua și Terra) și Landsat (5.7 și 8) sunt folosite pentru a explora temperatura suprafeței terestre, identificând fenomenul insulelor de căldură urbane în 16 orașe din regiunea Nord-Est (NE) din România. Pentru mai multe detalii accesați aici <http://rmarkdown.rstudio.com>.
+
+```{r setup, include=F}
+knitr::opts_chunk$set(
+  echo = F,
+  message = F,
+  warning = F
+)
+
+```
+
+## Începe partea fun 
+
+```{r }
+library(shiny)
+
+orase <- c("Barlad","Bacau", "Botosani","Dorohoi","Falticeni","Husi","Iasi","MoinComan",
+           "Onesti","Pascani","PiatraNeamt","Radauti","Roman","Suceava","Vaslui")
+
+inputPanel(
+  shiny::selectInput("orase",label = "Orașe",choices  = orase, selected = "Barlad"
+                     ),
+  shiny::selectInput("sezon",label = "Selectează sezonul",choices  = c("Iarna"="DJF","Primăvara"="MAM","Vara"="JJA","Toamna"="SON"), selected = "DJF"
+                     ),
+  shiny::radioButtons("mod", label = "Selecteaza satelitul", choices = c("Aqua"="MOD11A1",
+                                                                         "Terra"="MYD11A1"),selected = "MOD11A1"),
+  shiny::radioButtons("dn", label = "", choices = c("Zi"="Day","Noapte"="Night"), selected = "Day"))
+
+inputPanel(shiny::sliderInput("prag","Nebulozitate",min = 0, max = 90,value = 10,step = 10,animate = T),
+           shiny::sliderInput(
+                           "opacitat","Transparență",
+                           min = 0, max = 1,
+                           value = 0.8),
+            shiny::downloadButton("downloadData", "Descarcă raster (.tif)")
+           )
+```
+
+```{r}
+library(dplyr)
+library(seas)
+library(leaflet)
+library(leaflet.extras)
+library(raster)
+library(qs)
+library(RColorBrewer)
+rmean <- colorRampPalette( brewer.pal(11, "RdYlBu"), interpolate="linear")
+brks.mean <- seq(0, 5, by = .2)
+cols.mean <- rmean(length(brks.mean) - 1)
+
+tab <- qs::qread(paste0("data/tabs1/MODIS/tabsall_cloud_pixels.qs"))
+#grids <- qs::qread(paste0("data/grids1/MODIS/all_rasters.qs"))
+
+output$mymap <- renderLeaflet({
+  
+  #files <- list.files(paste0("data/grids/MODIS/filled/LST_",input$dn,"_1km/",input$orase,"/",input$mod,"_",input$dn,"_2000-2020"),recursive = T, full.names = T, pattern = ".tif")[1]
+   
+  #tabs <- read.csv(paste0("data/tabs/MODIS/",input$orase,"/",input$mod,"/",input$dn,"_","cloud_pixels.csv"))
+  tabs <- tab[[input$orase]]
+  
+  tabs <- tabs%>%dplyr::mutate(sez = mkseas(as.Date(timp), width = "DJF"))
+  
+  t1 <- tabs%>%filter(sez == input$sezon & frecventa <= input$prag & tip == input$mod & Day_night == input$dn)
+  t2 <- tabs%>%filter(sez == input$sezon & frecventa <= 20 & tip == input$mod & Day_night == input$dn)
+  
+ #r <- readRDS(paste0("data/grids1/MODIS/",input$orase,"/LST_1km_",input$dn,"_",input$mod,".rds")) 
+  
+  grids <- qs::qread(paste0("data/grids1/MODIS/",input$mod,"/",input$dn,"/","rasters.qs"))
+  
+  r <- grids[[input$orase]]
+  #r <- grids[[input$mod]][[input$orase]][[input$dn]]
+  r1 <- raster::rasterFromXYZ(r, crs = "+proj=longlat +datum=WGS84 +no_defs")
+  r1 <- r1 - 273.15
+  r1 <- raster::setZ(r1,as.Date(names(r1),"X%Y.%m.%d"))
+  r.sub <- r1[[which(format(raster::getZ(r1),"%Y-%m-%d")%in%c(t1$timp))]]
+  r.sub1 <- raster::mean(r1[[which(format(raster::getZ(r1),"%Y-%m-%d") %in% c(t2$timp))]])
+
+  r.sub.mean <- raster::mean(r.sub)
+  r.sub.mean1 <- raster::mean(r.sub1)
+
+  lot <- mean(raster::coordinates(r.sub.mean)[,1])
+  lat <- mean(raster::coordinates(r.sub.mean)[,2])
+
+  val.min <- raster::minValue(r.sub.mean1)-2
+  val.max <- raster::maxValue(r.sub.mean1)+2
+
+  # ##
+  # r1 <- r1 -273.15
+  # r2 <- terra::rast(r1)
+  # terra::time(r2) <- as.Date(names(r2),"X%Y.%m.%d")
+  # r.sub <- r2[[which(format(terra::time(r2),"%Y-%m-%d") %in% c(t1$timp))]]
+  # r.sub1 <- terra::mean(r2[[which(format(terra::time(r2),"%Y-%m-%d") %in% c(t2$timp))]])
+  # 
+  # r.sub.mean <- terra::mean(r.sub)
+  # r.sub.mean1 <- raster::raster(r.sub.mean)
+  # lot <- mean(raster::coordinates(r.sub.mean1)[,1])
+  # lat <- mean(raster::coordinates(r.sub.mean1)[,2])
+  # 
+  # val.min <- terra::minmax(r.sub1)[1] -2
+  # val.max <- terra::minmax(r.sub1)[2] +2
+  
+  bin <- 16
+  pa <- colorBin(rev(cols.mean),domain = c(val.min,val.max),bins = bin,
+                  na.color = "transparent")
+   
+  leaflet() %>% addTiles() %>% setView(lng = lot, lat = lat, zoom=12.0)%>%
+    addRasterImage(r.sub.mean, colors = pa,method = "bilinear",opacity = input$opacitat)%>%
+     addLegend('topright',pal = pa,values = c(val.min,val.max),title = "°C", layerId = "colorLegend")%>%
+    addResetMapButton() %>%
+    addSearchFeatures(
+      targetGroups  = 'neig_labels',
+      options = searchFeaturesOptions(
+        zoom=15,
+        openPopup=FALSE,
+        hideMarkerOnCollapse = TRUE,
+        textErr = "Locația nu a fost găsită",
+        textCancel = "Anulare",
+        textPlaceholder = "Căutare..."
+      )
+    )
+})
+
+# output$downloadData <- downloadHandler(
+# 
+#   filename = function() {
+#     paste0("raster_", input$orase,"_",input$mod,"_",input$dn,"_",input$prag,"_cloud_pixels", ".tif")
+#   },
+#   content = function(file) {
+#     
+#     tabs <- readRDS(paste0("data/tabs1/MODIS/",input$orase,"_cloud_pixels.rds"))
+# 
+#     tabs <- tabs%>%dplyr::mutate(sez = mkseas(as.Date(timp), width = "DJF"))
+# 
+#     t1 <- tabs%>%filter(sez == input$sezon & frecventa <= input$prag & tip == input$mod & Day_night == input$dn)
+#     t2 <- tabs%>%filter(sez == input$sezon & frecventa <= 20 & tip == input$mod & Day_night == input$dn)
+# 
+#     #r1 <- raster::stack(files)
+#     r <- readRDS(paste0("data/grids1/MODIS/",input$orase,"/LST_1km_",input$dn,"_",input$mod,".rds"))
+#     r1 <- raster::rasterFromXYZ(r, crs = "+proj=longlat +datum=WGS84 +no_defs")
+#     r1 <- r1-273.15
+#     r1 <- raster::setZ(r1,as.Date(names(r1),"X%Y.%m.%d"))
+#     r.sub <- r1[[which(format(raster::getZ(r1),"%Y-%m-%d")%in%c(t1$timp))]]
+#     r.sub1 <- raster::mean(r1[[which(format(raster::getZ(r1),"%Y-%m-%d") %in% c(t2$timp))]])
+# 
+#     r.sub.mean <- raster::mean(r.sub)
+#     r.sub.mean1 <- raster::mean(r.sub1)
+#     raster::writeRaster(r.sub.mean, file)
+#     
+#   },
+#   contentType = "application/zip"
+# )
+
+leafletOutput("mymap",width = 900, height = 800)
+#downloadButton("downloadData")
+
+```
+
+<!-- # ```{r} -->
+<!-- # # library(raster) -->
+<!-- # # library(dplyr) -->
+<!-- # # library(seas) -->
+<!-- # # tabs <- readRDS(paste0("data/tabs1/MODIS/tabsall_cloud_pixels.rds")) -->
+<!-- # # tabs <- tabs%>%dplyr::mutate(sez = mkseas(as.Date(timp), width = "DJF")) -->
+<!-- # #  -->
+<!-- # # t1 <- tabs%>%filter(sez == "DJF" & frecventa <= 10) -->
+<!-- # # t2 <- tabs%>%filter(sez == "DJF" & frecventa <= 20 ) -->
+<!-- # #  -->
+<!-- # # r <- readRDS(paste0("data/grids1/MODIS/MOD11A1/all_rasters.rds")) -->
+<!-- # # r.sub <- r[["Vaslui"]][["Day_MOD11A1"]] -->
+<!-- # # r1 <- raster::rasterFromXYZ(r.sub, crs = "+proj=longlat +datum=WGS84 +no_defs") -->
+<!-- # #  -->
+<!-- # # r2 <- terra::rast(r1) -->
+<!-- # # r1 <- r1-273.15 -->
+<!-- # # r1 <- raster::setZ(r1,as.Date(names(r1),"X%Y.%m.%d")) -->
+<!-- # # r.sub <- r1[[which(format(raster::getZ(r1),"%Y-%m-%d") %in% c(t1$timp))]] -->
+<!-- # # r.sub1 <- raster::mean(r1[[which(format(raster::getZ(r1),"%Y-%m-%d") %in% c(t2$timp))]]) -->
+<!-- # # r.sub.mean <- raster::mean(r.sub) -->
+<!-- # # val.min <- raster::minValue(r.sub.mean) -->
+<!-- # # val.max <- raster::maxValue(r.sub.mean) -->
+<!-- # # tt4 <- readRDS("data/tabs1/MODIS/Barlad_cloud_pixels.rds") -->
+<!-- # ```  -->
